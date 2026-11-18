@@ -1,0 +1,45 @@
+name: Sweep stale live branches
+
+# Deletes run branches (<run_id>__<tier>-<bench>) whose snapshot is older than MAX_AGE_HOURS.
+# A branch normally disappears when its CI job ends; this catches jobs killed before cleanup.
+# 26h > the benchmark job's 24h timeout, so a branch that is still being refreshed is never hit.
+
+on:
+  schedule:
+    - cron: "41 * * * *"   # hourly
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List what would be deleted, delete nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  MAX_AGE_HOURS: "26"
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete stale run branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: |
+          now=$(date +%s); n=0; kept=0
+          gh api --paginate "repos/${{ github.repository }}/branches" --jq '.[].name' | while read -r b; do
+            [ "$b" = "main" ] && continue
+            when=$(gh api "repos/${{ github.repository }}/commits/$b" --jq '.commit.committer.date')
+            age=$(( (now - $(date -d "$when" +%s)) / 3600 ))
+            if [ "$age" -ge "$MAX_AGE_HOURS" ]; then
+              echo "stale: $b (${age}h old)"
+              if [ "$DRY_RUN" != "true" ]; then
+                gh api -X DELETE "repos/${{ github.repository }}/git/refs/heads/$b" && echo "  deleted"
+              fi
+            else
+              echo "keep:  $b (${age}h old)"
+            fi
+          done
